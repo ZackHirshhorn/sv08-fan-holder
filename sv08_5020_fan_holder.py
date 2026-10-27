@@ -34,7 +34,7 @@ SOCKET_H   = 4.0
 SOCKET_T   = 1.6
 
 # screws / bosses
-BOSS_D     = 8.0
+BOSS_D     = 10.0     # 3.7 mm wall around the pilot
 BOSS_LEN   = 10.0     # behind the fan back face
 PILOT_D    = 2.6      # M3 self-tapping
 
@@ -45,6 +45,17 @@ MAG_D      = 4.25
 MAG_DEPTH  = 3.1
 PAD_W, PAD_H, PAD_T = 8.0, 9.0, 6.0
 X_LIMITS   = (-32.0, 30.5)   # stay inside the stock extruder plate's width
+
+# side cheeks: deep YZ plates from the duct floor up to the magnet pads.
+# The space between the fan's back face and the extruder plate is empty on
+# both sides, so the cheeks use all of it; depth in Y is what resists
+# pulling the part off the magnets.
+CHEEK_X_L  = (-32.0, -26.0)
+CHEEK_X_R  = (25.3, 30.5)    # 2515 fan screw heads end at x=24.5
+CHEEK_FRONT = -9.6           # 0.8 behind the 5020, 1.5 behind the extruder adapter plate
+CHEEK_BACK = 11.0            # ahead of the plate's screw heads (y>11.6)
+FLANGE     = 5.0             # front / back edge width around the lightening holes
+RIB        = 4.0             # diagonal ribs between the flanges
 
 # ---------------- helpers ----------------
 def box(x0, x1, y0, y1, z0, z1):
@@ -86,7 +97,8 @@ outer = (box(ox0, ox1, oy0, oy1, FLOOR_Z, FAN_BOT_Z + SOCKET_H)
 
 zi0 = FLOOR_Z + WALL
 void = (box(ox0 + WALL, ox1 - WALL, oy0 + WALL, oy1 - WALL, zi0, FAN_BOT_Z - WALL)
-        .union(box(L_ARM[0] + WALL, L_ARM[1] - WALL, L_ARM[2], L_ARM[3] - WALL, zi0, ARM_TOP - WALL))
+        # left channel stops at the cheek so the cheek stays solid down to the floor
+        .union(box(CHEEK_X_L[1], L_ARM[1] - WALL, L_ARM[2], L_ARM[3] - WALL, zi0, ARM_TOP - WALL))
         .union(box(R_ARM[0] + WALL, R_ARM[1] - WALL, R_ARM[2], R_ARM[3] - WALL, zi0, ARM_TOP - WALL))
         # opening under the fan outlet (fan rests on the ledge around it)
         .union(box(FAN_OUT_X[0] + 0.2, FAN_OUT_X[1] - 0.2, FAN_OUT_Y[0] + 0.2, FAN_OUT_Y[1] - 0.2,
@@ -99,35 +111,54 @@ frame = cq.Workplane("XY")
 # fan ear bosses
 for (ex, ez) in EARS:
     frame = frame.union(cyl_y(ex, ez, FAN_Y[1], FAN_Y[1] + BOSS_LEN, BOSS_D))
-# lower-right boss sits straight on the right arm
-frame = frame.union(box(EARS[0][0] - 4, EARS[0][0] + 4, FAN_Y[1], FAN_Y[1] + BOSS_LEN,
+# lower-right boss sits on the right arm, tied sideways into the right cheek
+frame = frame.union(box(EARS[0][0] - BOSS_D / 2, CHEEK_X_R[0] + 1, FAN_Y[1], FAN_Y[1] + BOSS_LEN,
                         ARM_TOP - 1, EARS[0][1]))
-# upper-left boss: column down to the left arm (behind the fan, ahead of the probe)
-frame = frame.union(box(EARS[1][0] - 4, EARS[1][0] + 2, FAN_Y[1], FAN_Y[1] + 6,
-                        ARM_TOP - 1, EARS[1][1]))
+# (the upper-left boss merges straight into the left cheek)
 
-def side_brace(x0, x1, arm_y1, mag_z):
-    pts = [(FAN_Y[1], ARM_TOP - 2), (arm_y1, ARM_TOP - 2),
-           (MATE_Y, mag_z - PAD_H / 2), (MATE_Y, mag_z + PAD_H / 2),
-           (MATE_Y - PAD_T, mag_z + PAD_H / 2), (FAN_Y[1] + 6, ARM_TOP + 6),
-           (FAN_Y[1], ARM_TOP + 6)]
+def yz_prism(pts, x0, x1):
     return (cq.Workplane("YZ").polyline(pts).close()
             .extrude(x1 - x0).translate((x0, 0, 0)))
 
-frame = frame.union(side_brace(-31.6, -24.8, L_ARM[3], MAGNETS[0][1]))   # 2 mm off the probe
-frame = frame.union(side_brace(23.9, 29.9, R_ARM[3], MAGNETS[1][1]))
+def cheek(x0, x1, arm_y1, lo_z, hi_z):
+    """Side plate in the YZ plane: solid foot beside the duct arm, a 56 deg
+    ramp back to the lower pad, front/back flanges up to the upper pad, and
+    triangular lightening holes between diagonal ribs. Every downward-facing
+    edge is 45 deg or steeper, so it prints upright without support."""
+    lo_top, hi_bot = lo_z + PAD_H / 2, hi_z - PAD_H / 2
+    ch = MATE_Y - CHEEK_BACK                     # 45 deg chamfers into the pads
+    outline = [(CHEEK_FRONT, FLOOR_Z), (arm_y1, FLOOR_Z),
+               (MATE_Y, lo_z - PAD_H / 2), (MATE_Y, lo_top),
+               (CHEEK_BACK, lo_top + ch), (CHEEK_BACK, hi_bot - ch),
+               (MATE_Y, hi_bot), (MATE_Y, hi_z + PAD_H / 2),
+               (CHEEK_FRONT, hi_z + PAD_H / 2)]
+    wy0, wy1 = CHEEK_FRONT + FLANGE, CHEEK_BACK - FLANGE
+    wz0 = ARM_TOP + 6
+    roof = (wy1 - wy0) / 2
+    wz1 = hi_bot - ch - FLANGE                   # top of the gable roof
+    window = yz_prism([(wy0, wz0), (wy1, wz0), (wy1, wz1 - roof),
+                       ((wy0 + wy1) / 2, wz1), (wy0, wz1 - roof)], x0 - 1, x1 + 1)
+    # zig-zag ribs, flange to flange
+    n = 3
+    step = (wz1 - roof - wz0) / n
+    ribs = cq.Workplane("XY")
+    for i in range(n):
+        ya, yb = (wy1, wy0) if i % 2 == 0 else (wy0, wy1)
+        za, zb = wz0 + i * step, wz0 + (i + 1) * step
+        L = math.hypot(yb - ya, zb - za)
+        uy, uz = (yb - ya) / L, (zb - za) / L     # along the rib
+        py, pz = -uz * RIB / 2, uy * RIB / 2      # half-width across it
+        ya, za, yb, zb = ya - uy * 3, za - uz * 3, yb + uy * 3, zb + uz * 3
+        ribs = ribs.union(yz_prism([(ya + py, za + pz), (yb + py, zb + pz),
+                                    (yb - py, zb - pz), (ya - py, za - pz)], x0 - 1, x1 + 1))
+    return yz_prism(outline, x0, x1).cut(window.cut(ribs))
 
-# magnet pads + vertical rails to the upper magnets
+frame = frame.union(cheek(*CHEEK_X_L, L_ARM[3], MAGNETS[0][1], MAGNETS[2][1]))
+frame = frame.union(cheek(*CHEEK_X_R, R_ARM[3], MAGNETS[1][1], MAGNETS[3][1]))
+
+# magnet pads (wider than the cheeks so the pockets keep a full wall)
 for (mx, mz) in MAGNETS:
     frame = frame.union(box(max(mx - PAD_W / 2, X_LIMITS[0]), min(mx + PAD_W / 2, X_LIMITS[1]), MATE_Y - PAD_T, MATE_Y,
-                            mz - PAD_H / 2, mz + PAD_H / 2))
-# rails run ahead of the plate's screw heads and the gear case edge
-RAIL_Y = (5.0, 11.0)
-for lo, hi in [(MAGNETS[0], MAGNETS[2]), (MAGNETS[1], MAGNETS[3])]:
-    xc = (lo[0] + hi[0]) / 2
-    frame = frame.union(box(xc - 2.5, xc + 2.5, RAIL_Y[0], RAIL_Y[1], lo[1] - PAD_H / 2, hi[1] + PAD_H / 2))
-for (mx, mz) in MAGNETS:   # pads reach back from the rail to the plate
-    frame = frame.union(box(max(mx - PAD_W / 2, X_LIMITS[0]), min(mx + PAD_W / 2, X_LIMITS[1]), RAIL_Y[0], MATE_Y - PAD_T + 0.1,
                             mz - PAD_H / 2, mz + PAD_H / 2))
 
 body = outer.union(frame).cut(void)
